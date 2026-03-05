@@ -73,6 +73,26 @@ def main():
                 off_x = st.number_input("Offset X (mm)", value=0.0, step=0.1)
                 off_y = st.number_input("Offset Y (mm)", value=0.0, step=0.1)
 
+                with st.expander("🎛️ Regolazioni Layout"):
+                    lo_pad = st.slider("Margine interno (pad Y, mm)", 1.0, 6.0, 3.0, 0.5,
+                                       help="Distanza dal bordo superiore/inferiore dell'etichetta")
+                    lo_gap = st.slider("Spazio testo-barcode (mm)", 0.5, 4.0, 1.5, 0.5,
+                                       help="Distanza tra le righe di testo e il barcode")
+                    lo_ls = st.slider("Spaziatura righe testo (mm)", 2.0, 5.0, 3.0, 0.5,
+                                      help="Distanza tra le righe di testo superiore")
+                    lo_fs = st.slider("Dimensione font (pt)", 6, 14, 9, 1,
+                                      help="Dimensione del testo superiore e inferiore")
+                    lo_bh = st.slider("Altezza barcode (mm)", 8.0, 25.0, 14.5, 0.5,
+                                      help="Altezza massima del barcode")
+
+                layout_overrides = {
+                    "pad_y_mm": lo_pad,
+                    "gap_mm": lo_gap,
+                    "line_spacing_mm": lo_ls,
+                    "font_size_pt": lo_fs,
+                    "barcode_height_mm": lo_bh,
+                }
+
                 if st.button("⚡ GENERA PDF"):
                     # Validate mapping
                     missing_required = [f for f, req in field_names if req and f not in mapping]
@@ -95,6 +115,7 @@ def main():
                                     offset_x=off_x,
                                     offset_y=off_y,
                                     output_path=output_path,
+                                    layout_overrides=layout_overrides,
                                 )
 
                                 with open(result_path, "rb") as f:

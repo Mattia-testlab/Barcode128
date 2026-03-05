@@ -293,6 +293,7 @@ def generate_pdf(
     offset_x: float,
     offset_y: float,
     output_path: str,
+    layout_overrides: dict | None = None,
 ) -> str:
     """
     Generate a PDF of barcode labels.
@@ -313,11 +314,15 @@ def generate_pdf(
         Calibration offsets in mm.
     output_path : str
         Destination PDF file path.
+    layout_overrides : dict, optional
+        Override layout params: pad_y_mm, gap_mm, line_spacing_mm,
+        font_size_pt, barcode_height_mm.
 
     Returns
     -------
     str  –  The absolute path to the generated PDF.
     """
+    lo = layout_overrides or {}
     prof = PROFILES[profile]
     top_fields = prof["top_fields"]
     bottom_field_key = prof.get("bottom_field", "")
@@ -330,6 +335,13 @@ def generate_pdf(
 
     label_idx = start_pos - 1  # 0-based position on first page
     page_started = True
+
+    # Resolve layout values: override > profile > global default
+    pad_y = lo.get("pad_y_mm", LABEL_PAD_Y)
+    gap_val = lo.get("gap_mm", 1.5)
+    ls_mm = lo.get("line_spacing_mm", prof.get("line_spacing_mm", 3.0))
+    font_size = lo.get("font_size_pt", prof.get("font_top_size", FONT_TOP_SIZE))
+    barcode_h_mm = lo.get("barcode_height_mm", prof.get("barcode_height_mm", BARCODE_HEIGHT_MM))
 
     for rec in records:
         # Start a new page when the current one is full
@@ -345,17 +357,14 @@ def generate_pdf(
         label_bottom = y
         cx = x + (LABEL_WIDTH * mm) / 2  # horizontal center
 
-        content_top = label_top - LABEL_PAD_Y * mm
-        content_bottom = label_bottom + LABEL_PAD_Y * mm
+        content_top = label_top - pad_y * mm
+        content_bottom = label_bottom + pad_y * mm
 
-        # Profile overrides
-        line_spacing = prof.get("line_spacing_mm", 3.0) * mm
-        font_size = prof.get("font_top_size", FONT_TOP_SIZE)
-        barcode_h_mm = prof.get("barcode_height_mm", BARCODE_HEIGHT_MM)
+        line_spacing = ls_mm * mm
 
         n_top = len(top_fields)
         font_h = font_size * 0.3528 * mm  # pt → mm (approx)
-        gap = 1.5 * mm  # uniform gap between zones
+        gap = gap_val * mm  # uniform gap between zones
 
         # Zone boundaries (ReportLab: y=0 is page bottom)
         top_zone_bottom = content_top - n_top * line_spacing
@@ -443,6 +452,7 @@ def generate_svg(
     offset_x: float,
     offset_y: float,
     output_path: str,
+    layout_overrides: dict | None = None,
 ) -> list[str]:
     """
     Generate one SVG file per page of barcode labels (vector, editable
@@ -450,6 +460,7 @@ def generate_svg(
 
     Returns a list of absolute paths to the generated SVG files.
     """
+    lo = layout_overrides or {}
     SVG_NS = "http://www.w3.org/2000/svg"
     prof = PROFILES[profile]
     top_fields = prof["top_fields"]
@@ -502,17 +513,23 @@ def generate_svg(
             ly = MARGIN_TOP + row * LABEL_HEIGHT + offset_y
 
             # ---- Layout zones (uniform spacing) --------------------------
-            content_top = ly + LABEL_PAD_Y
-            content_bottom = ly + LABEL_HEIGHT - LABEL_PAD_Y
+            # Resolve layout values: override > profile > global default
+            pad_y = lo.get("pad_y_mm", LABEL_PAD_Y)
+            gap_val = lo.get("gap_mm", 1.5)
+            ls_mm = lo.get("line_spacing_mm", prof.get("line_spacing_mm", 3.0))
+            fs_pt = lo.get("font_size_pt", prof.get("font_top_size", FONT_TOP_SIZE))
+            bc_h_mm = lo.get("barcode_height_mm", prof.get("barcode_height_mm", BARCODE_HEIGHT_MM))
+
+            content_top = ly + pad_y
+            content_bottom = ly + LABEL_HEIGHT - pad_y
             cx = lx + LABEL_WIDTH / 2
 
-            # Profile overrides
-            line_spacing = prof.get("line_spacing_mm", 3.0)
-            fs_svg = prof.get("font_top_size", FONT_TOP_SIZE) * 0.3528  # pt → mm
+            line_spacing = ls_mm
+            fs_svg = fs_pt * 0.3528  # pt → mm
 
             n_top = len(top_fields)
             font_h = fs_svg
-            gap = 1.5  # mm uniform gap between zones
+            gap = gap_val  # mm uniform gap between zones
 
             # Zone boundaries (SVG: y increases downward)
             top_zone_bottom = content_top + n_top * line_spacing
@@ -554,7 +571,7 @@ def generate_svg(
                 scale = max_w / bc_w if bc_w > 0 else 1.0
 
                 scaled_h = bc_h * scale
-                max_h = prof.get("barcode_height_mm", BARCODE_HEIGHT_MM)
+                max_h = bc_h_mm
                 if scaled_h > max_h:
                     scale *= max_h / scaled_h
                     scaled_h = max_h
