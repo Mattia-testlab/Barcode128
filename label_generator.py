@@ -40,7 +40,7 @@ LABEL_HEIGHT = 37.0
 
 # Padding within each label cell (keeps content off pre-cut borders)
 LABEL_PAD_X = 2.0   # mm inset from left/right edges
-LABEL_PAD_Y = 1.5   # mm reduced to give more vertical space for large barcode/text
+LABEL_PAD_Y = 3.0   # mm inset from top/bottom edges (keeps content inside printer margins)
 
 # Margins to center the grid on the page
 MARGIN_LEFT = (A4_WIDTH_MM - COLS * LABEL_WIDTH) / 2  # ≈ 0 mm
@@ -75,7 +75,7 @@ PROFILES = {
         # Layout overrides for 3-line labels
         "line_spacing_mm": 3.0,
         "font_top_size": 9,
-        "barcode_height_mm": 18.0,
+        "barcode_height_mm": 16.0,
         # Preset column mapping
         "default_mapping": {
             "Codice Barcode": "QVC",
@@ -94,7 +94,7 @@ PROFILES = {
         "has_repeat": True,
         "repeat_field": "Numero Copie",
         "description": "SKT + PO in alto, Barcode QVC al centro, QVC in basso (Qta = n° copie)",
-        "barcode_height_mm": 22.0,
+        "barcode_height_mm": 20.0,
         # Preset column mapping
         "default_mapping": {
             "Codice Barcode": "Codice QVC",
