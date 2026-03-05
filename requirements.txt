@@ -1,0 +1,5 @@
+pandas
+openpyxl
+python-barcode
+reportlab
+streamlit
