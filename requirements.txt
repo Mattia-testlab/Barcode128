@@ -2,5 +2,6 @@ pandas
 openpyxl
 python-barcode
 reportlab
-streamlit
+streamlit>=1.32
+altair<6
 Pillow
