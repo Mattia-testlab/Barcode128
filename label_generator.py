@@ -75,7 +75,7 @@ PROFILES = {
         # Layout overrides for 3-line labels
         "line_spacing_mm": 3.0,
         "font_top_size": 9,
-        "barcode_height_mm": 16.0,
+        "barcode_height_mm": 14.5,
         # Preset column mapping
         "default_mapping": {
             "Codice Barcode": "QVC",
@@ -94,7 +94,8 @@ PROFILES = {
         "has_repeat": True,
         "repeat_field": "Numero Copie",
         "description": "SKT + PO in alto, Barcode QVC al centro, QVC in basso (Qta = n° copie)",
-        "barcode_height_mm": 20.0,
+        "line_spacing_mm": 3.0,
+        "barcode_height_mm": 17.5,
         # Preset column mapping
         "default_mapping": {
             "Codice Barcode": "Codice QVC",
@@ -339,7 +340,7 @@ def generate_pdf(
 
         x, y = _label_origin(label_idx, offset_x, offset_y)
 
-        # ---- Top text lines ------------------------------------------------
+        # ---- Layout zones (uniform spacing) --------------------------------
         label_top = y + LABEL_HEIGHT * mm
         label_bottom = y
         cx = x + (LABEL_WIDTH * mm) / 2  # horizontal center
@@ -348,10 +349,25 @@ def generate_pdf(
         content_bottom = label_bottom + LABEL_PAD_Y * mm
 
         # Profile overrides
-        line_spacing = prof.get("line_spacing_mm", 3.2) * mm
+        line_spacing = prof.get("line_spacing_mm", 3.0) * mm
         font_size = prof.get("font_top_size", FONT_TOP_SIZE)
         barcode_h_mm = prof.get("barcode_height_mm", BARCODE_HEIGHT_MM)
 
+        n_top = len(top_fields)
+        font_h = font_size * 0.3528 * mm  # pt → mm (approx)
+        gap = 1.5 * mm  # uniform gap between zones
+
+        # Zone boundaries (ReportLab: y=0 is page bottom)
+        top_zone_bottom = content_top - n_top * line_spacing
+        bottom_baseline = content_bottom + 1.0 * mm
+        bottom_zone_top = bottom_baseline + font_h
+
+        # Barcode zone: space between top text and bottom text
+        barcode_area_top = top_zone_bottom - gap
+        barcode_area_bottom = bottom_zone_top + gap
+        barcode_available = barcode_area_top - barcode_area_bottom
+
+        # ---- Top text lines ------------------------------------------------
         c.setFont(FONT_TOP, font_size)
         for i, field_def in enumerate(top_fields):
             field_key = field_def["key"]
@@ -377,34 +393,32 @@ def generate_pdf(
             draw_w = iw * scale
             draw_h = ih * scale
 
+            # Clamp to configured max height
             max_h = barcode_h_mm * mm
             if draw_h > max_h:
                 scale2 = max_h / draw_h
                 draw_w *= scale2
                 draw_h = max_h
 
-            # Dynamic clamp: ensure barcode fits between top text and bottom text
-            top_text_bottom = content_top - len(top_fields) * line_spacing - 0.5 * mm
-            bottom_text_top = content_bottom + 3.5 * mm
-            available_h = top_text_bottom - bottom_text_top - 1.0 * mm  # 1mm gap
-            if draw_h > available_h > 0:
-                clamp_scale = available_h / draw_h
+            # Dynamic clamp: never exceed available space
+            if barcode_available > 0 and draw_h > barcode_available:
+                clamp_scale = barcode_available / draw_h
                 draw_w *= clamp_scale
-                draw_h = available_h
+                draw_h = barcode_available
 
-            mid_zone = (top_text_bottom + bottom_text_top) / 2
-            barcode_y = mid_zone - draw_h / 2
-
+            # Center barcode in its zone
+            barcode_mid = (barcode_area_top + barcode_area_bottom) / 2
+            barcode_y = barcode_mid - draw_h / 2
             barcode_x = x + (LABEL_WIDTH * mm - draw_w) / 2
             c.drawImage(img, barcode_x, barcode_y, width=draw_w, height=draw_h,
                         preserveAspectRatio=True, anchor="c")
 
-        # ---- Bottom text (Testo Inferiore) ─────────────────────────────────
+        # ---- Bottom text (Testo Inferiore) ---------------------------------
         bottom_col = mapping.get(bottom_field_key, "")
         if bottom_col and bottom_col in rec:
             bottom_text = str(rec[bottom_col])
             c.setFont(FONT_BOTTOM, font_size)
-            c.drawCentredString(cx, content_bottom + 0.5 * mm, bottom_text)
+            c.drawCentredString(cx, bottom_baseline, bottom_text)
 
         # ---- Optional: draw light border for debugging (uncomment) ----------
         # c.setStrokeColorRGB(0.85, 0.85, 0.85)
@@ -487,18 +501,30 @@ def generate_svg(
             lx = MARGIN_LEFT + col * LABEL_WIDTH + offset_x
             ly = MARGIN_TOP + row * LABEL_HEIGHT + offset_y
 
-            # ---- Top text lines ------------------------------------------
+            # ---- Layout zones (uniform spacing) --------------------------
             content_top = ly + LABEL_PAD_Y
             content_bottom = ly + LABEL_HEIGHT - LABEL_PAD_Y
             cx = lx + LABEL_WIDTH / 2
 
             # Profile overrides
-            line_spacing = prof.get("line_spacing_mm", 3.2)
-            font_size_mm = prof.get("font_top_size", FONT_TOP_SIZE) * (25.4 / 72) # pt to mm approx
-            # However, for SVG we used 3.2 fixed previously. Let's make it consistent.
-            # 9pt is approx 3.175mm. 3.2 is close enough.
-            fs_svg = prof.get("font_top_size", FONT_TOP_SIZE) * 0.3528 # conversion
+            line_spacing = prof.get("line_spacing_mm", 3.0)
+            fs_svg = prof.get("font_top_size", FONT_TOP_SIZE) * 0.3528  # pt → mm
 
+            n_top = len(top_fields)
+            font_h = fs_svg
+            gap = 1.5  # mm uniform gap between zones
+
+            # Zone boundaries (SVG: y increases downward)
+            top_zone_bottom = content_top + n_top * line_spacing
+            bottom_baseline = content_bottom - 1.0
+            bottom_zone_top = bottom_baseline - font_h
+
+            # Barcode zone
+            barcode_area_top = top_zone_bottom + gap
+            barcode_area_bottom = bottom_zone_top - gap
+            barcode_available = barcode_area_bottom - barcode_area_top
+
+            # ---- Top text lines ------------------------------------------
             for i, field_def in enumerate(top_fields):
                 field_key = field_def["key"]
                 prefix = field_def.get("prefix", "")
@@ -535,20 +561,17 @@ def generate_svg(
 
                 scaled_w = bc_w * scale
 
-                # Dynamic clamp: ensure barcode fits between top text and bottom text
-                top_text_bottom = content_top + len(top_fields) * line_spacing + 0.5
-                bottom_zone_top = content_bottom - 3.5
-                available_h = bottom_zone_top - top_text_bottom - 1.0  # 1mm gap
-                if scaled_h > available_h > 0:
-                    clamp_scale = available_h / scaled_h
+                # Dynamic clamp: never exceed available space
+                if barcode_available > 0 and scaled_h > barcode_available:
+                    clamp_scale = barcode_available / scaled_h
                     scale *= clamp_scale
                     scaled_w = bc_w * scale
-                    scaled_h = available_h
+                    scaled_h = barcode_available
 
-                mid = (top_text_bottom + bottom_zone_top) / 2
-
+                # Center barcode in its zone
+                barcode_mid = (barcode_area_top + barcode_area_bottom) / 2
                 bc_x = lx + (LABEL_WIDTH - scaled_w) / 2
-                bc_y = mid - scaled_h / 2
+                bc_y = barcode_mid - scaled_h / 2
 
                 g = ET.SubElement(svg, "g", {
                     "transform": f"translate({bc_x:.3f},{bc_y:.3f}) scale({scale:.6f})",
@@ -566,10 +589,9 @@ def generate_svg(
             bottom_col = mapping.get(bottom_field_key, "")
             if bottom_col and bottom_col in rec:
                 bottom_text = str(rec[bottom_col])
-                bt_y = content_bottom - 0.5
                 t = ET.SubElement(svg, "text", {
                     "x": str(cx),
-                    "y": str(bt_y),
+                    "y": str(bottom_baseline),
                     "text-anchor": "middle",
                     "font-family": "Helvetica, Arial, sans-serif",
                     "font-weight": "bold",
