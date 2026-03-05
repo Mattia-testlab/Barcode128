@@ -48,7 +48,7 @@ MARGIN_TOP = (A4_HEIGHT_MM - ROWS * LABEL_HEIGHT) / 2  # ≈ 0.5 mm
 
 # Barcode sizing
 BARCODE_MAX_WIDTH_RATIO = 0.88  # max 88% of label width (accounts for padding)
-BARCODE_HEIGHT_MM = 25.0  # massive barcode for easy scanning
+BARCODE_HEIGHT_MM = 20.0  # default barcode height (profiles may override)
 
 # Font settings
 FONT_TOP = "Helvetica"
@@ -73,9 +73,9 @@ PROFILES = {
         "has_repeat": False,
         "description": "CARTONE + PO + Quantità in alto, Barcode al centro, QVC in basso",
         # Layout overrides for 3-line labels
-        "line_spacing_mm": 3.2,
-        "font_top_size": 10,
-        "barcode_height_mm": 25.0,
+        "line_spacing_mm": 3.0,
+        "font_top_size": 9,
+        "barcode_height_mm": 18.0,
         # Preset column mapping
         "default_mapping": {
             "Codice Barcode": "QVC",
@@ -94,7 +94,7 @@ PROFILES = {
         "has_repeat": True,
         "repeat_field": "Numero Copie",
         "description": "SKT + PO in alto, Barcode QVC al centro, QVC in basso (Qta = n° copie)",
-        # Layout: defaults (line_spacing 3.2, font 9, barcode 22mm)
+        "barcode_height_mm": 22.0,
         # Preset column mapping
         "default_mapping": {
             "Codice Barcode": "Codice QVC",
@@ -383,9 +383,15 @@ def generate_pdf(
                 draw_w *= scale2
                 draw_h = max_h
 
-            # Position barcode tightly between top text and bottom text
+            # Dynamic clamp: ensure barcode fits between top text and bottom text
             top_text_bottom = content_top - len(top_fields) * line_spacing - 0.5 * mm
             bottom_text_top = content_bottom + 3.5 * mm
+            available_h = top_text_bottom - bottom_text_top - 1.0 * mm  # 1mm gap
+            if draw_h > available_h > 0:
+                clamp_scale = available_h / draw_h
+                draw_w *= clamp_scale
+                draw_h = available_h
+
             mid_zone = (top_text_bottom + bottom_text_top) / 2
             barcode_y = mid_zone - draw_h / 2
 
@@ -529,9 +535,16 @@ def generate_svg(
 
                 scaled_w = bc_w * scale
 
-                # Position barcode tightly between top text and bottom
+                # Dynamic clamp: ensure barcode fits between top text and bottom text
                 top_text_bottom = content_top + len(top_fields) * line_spacing + 0.5
                 bottom_zone_top = content_bottom - 3.5
+                available_h = bottom_zone_top - top_text_bottom - 1.0  # 1mm gap
+                if scaled_h > available_h > 0:
+                    clamp_scale = available_h / scaled_h
+                    scale *= clamp_scale
+                    scaled_w = bc_w * scale
+                    scaled_h = available_h
+
                 mid = (top_text_bottom + bottom_zone_top) / 2
 
                 bc_x = lx + (LABEL_WIDTH - scaled_w) / 2
