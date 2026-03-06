@@ -5,10 +5,12 @@ from label_generator import (
     read_excel_headers,
     read_excel_data,
     generate_pdf,
+    get_dummy_records,
     PROFILES,
     LABELS_PER_PAGE,
 )
 import tempfile
+import base64
 
 def main():
     st.set_page_config(page_title="Barcode Pro Web", page_icon="🏷️", layout="wide")
@@ -68,22 +70,53 @@ def main():
                 st.header("3. Impostazioni e Stampa")
                 profile = st.radio("Profilo di stampa finale", list(PROFILES.keys()), index=list(PROFILES.keys()).index(selected_profile))
                 
+                # ── Field info box ──────────────────────────────────────
+                prof_data = PROFILES[profile]
+                field_info = prof_data.get("field_info", {})
+                
+                if profile == "COLLI":
+                    st.markdown("""
+                    <div style="background: linear-gradient(135deg, #e8f4f8, #d4e8f0); border-radius: 12px; padding: 16px; margin: 8px 0; border-left: 4px solid #2196F3;">
+                        <div style="font-weight: 700; font-size: 15px; color: #1565C0; margin-bottom: 10px;">📦 Profilo COLLI — Layout Etichetta</div>
+                        <p style="font-size: 14px; color: #333; margin: 0; line-height: 1.6;">
+                            <b>1.</b> In alto: <b>CARTONE</b><br>
+                            <b>2.</b> Sotto: <b>PO</b> + {codice PO}<br>
+                            <b>3.</b> Sotto: <b>Q.tà</b> + {quantità}<br>
+                            <b>4.</b> Al centro: <b>Barcode</b> ({Codice QVC})<br>
+                            <b>5.</b> In basso: <b>Codice QVC</b>
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:  # SKT
+                    st.markdown("""
+                    <div style="background: linear-gradient(135deg, #f3e8f8, #e4d4f0); border-radius: 12px; padding: 16px; margin: 8px 0; border-left: 4px solid #9C27B0;">
+                        <div style="font-weight: 700; font-size: 15px; color: #7B1FA2; margin-bottom: 10px;">🏷️ Profilo SKT — Layout Etichetta</div>
+                        <p style="font-size: 14px; color: #333; margin: 0; line-height: 1.6;">
+                            <b>1.</b> In alto: <b>Codice SKT</b><br>
+                            <b>2.</b> Sotto: <b>PO</b> + {codice PO}<br>
+                            <b>3.</b> Al centro: <b>Barcode</b> ({Codice QVC})<br>
+                            <b>4.</b> In basso: <b>Codice QVC</b>
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+
                 start_pos = st.number_input(f"Posizione di inizio (1-{LABELS_PER_PAGE})", min_value=1, max_value=LABELS_PER_PAGE, value=1)
                 
                 off_x = st.number_input("Offset X (mm)", value=0.0, step=0.1)
                 off_y = st.number_input("Offset Y (mm)", value=0.0, step=0.1)
 
                 with st.expander("🎛️ Regolazioni Layout"):
-                    lo_pad = st.slider("Margine interno (pad Y, mm)", 1.0, 6.0, 3.0, 0.5,
-                                       help="Distanza dal bordo superiore/inferiore dell'etichetta")
-                    lo_gap = st.slider("Spazio testo-barcode (mm)", 0.5, 4.0, 1.5, 0.5,
+                    lo_pad = st.slider("Margine interno (pad Y, mm) [Standard: 4.5]", 3.0, 6.0, 4.5, 0.5,
+                                       help="Distanza dal bordo superiore/inferiore dell'etichetta (min 4.5mm consigliato per evitare margini stampante)")
+                    lo_gap = st.slider("Spazio testo-barcode (mm) [Standard: 1.0]", 0.5, 4.0, 1.0, 0.5,
                                        help="Distanza tra le righe di testo e il barcode")
-                    lo_ls = st.slider("Spaziatura righe testo (mm)", 2.0, 5.0, 3.0, 0.5,
+                    lo_ls = st.slider("Spaziatura righe testo (mm) [Standard: 3.0]", 2.0, 5.0, 3.0, 0.5,
                                       help="Distanza tra le righe di testo superiore")
-                    lo_fs = st.slider("Dimensione font (pt)", 6, 14, 9, 1,
+                    lo_fs = st.slider("Dimensione font (pt) [Standard: 9]", 6, 14, 9, 1,
                                       help="Dimensione del testo superiore e inferiore")
-                    lo_bh = st.slider("Altezza barcode (mm)", 8.0, 25.0, 14.5, 0.5,
-                                      help="Altezza massima del barcode")
+                    lo_bh = st.slider("Altezza max barcode (mm) [Standard: 20.0]", 8.0, 35.0, 20.0, 0.5,
+                                      help="Altezza del barcode (potrebbe essere limitata dallo spazio disponibile tra i testi)")
+
 
                 layout_overrides = {
                     "pad_y_mm": lo_pad,
@@ -93,45 +126,42 @@ def main():
                     "barcode_height_mm": lo_bh,
                 }
 
-                if st.button("⚡ GENERA PDF"):
-                    # Validate mapping
-                    missing_required = [f for f, req in field_names if req and f not in mapping]
-                    if missing_required:
-                        st.error(f"Campi obbligatori mancanti: {', '.join(missing_required)}")
-                    else:
-                        with st.spinner("Generazione PDF in corso..."):
-                            try:
-                                records = read_excel_data(tmp_path)
-                                
-                                # Use temporary path for output
-                                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as out_tmp:
-                                    output_path = out_tmp.name
+                # ── Generazione e Download ─────────────────────────────────
+                missing_required = [f for f, req in field_names if req and f not in mapping]
+                
+                if missing_required:
+                    st.warning(f"⚠️ Seleziona i campi obbligatori per abilitare il download: {', '.join(missing_required)}")
+                else:
+                    try:
+                        records = read_excel_data(tmp_path)
+                        
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as out_tmp:
+                            output_path = out_tmp.name
 
-                                result_path = generate_pdf(
-                                    records=records,
-                                    mapping=mapping,
-                                    profile=profile,
-                                    start_pos=start_pos,
-                                    offset_x=off_x,
-                                    offset_y=off_y,
-                                    output_path=output_path,
-                                    layout_overrides=layout_overrides,
-                                )
+                        result_path = generate_pdf(
+                            records=records,
+                            mapping=mapping,
+                            profile=profile,
+                            start_pos=start_pos,
+                            offset_x=off_x,
+                            offset_y=off_y,
+                            output_path=output_path,
+                            layout_overrides=layout_overrides,
+                        )
 
-                                with open(result_path, "rb") as f:
-                                    st.download_button(
-                                        label="📥 Scarica PDF",
-                                        data=f,
-                                        file_name=f"{os.path.splitext(uploaded_file.name)[0]}_etichette.pdf",
-                                        mime="application/pdf"
-                                    )
-                                st.success("PDF generato con successo!")
-                                
-                            except Exception as e:
-                                st.error(f"Errore durante la generazione: {e}")
-                            finally:
-                                if 'result_path' in locals() and os.path.exists(result_path):
-                                    pass # Keep for download button if needed, or cleanup safely later
+                        with open(result_path, "rb") as f:
+                            pdf_data = f.read()
+
+                        st.success("✅ File PDF pronto! (Il file si aggiorna automaticamente se modifichi gli slider sopra)")
+                        st.download_button(
+                            label="📥 Scarica PDF Aggiornato",
+                            data=pdf_data,
+                            file_name=f"{os.path.splitext(uploaded_file.name)[0]}_etichette_{profile}.pdf",
+                            mime="application/pdf"
+                        )
+                        
+                    except Exception as e:
+                        st.error(f"Errore durante la generazione del PDF: {e}")
         
         finally:
             # Note: We should ideally cleanup the temp file, but NamedTemporaryFile(delete=False) 
