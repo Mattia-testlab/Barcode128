@@ -36,25 +36,25 @@ LABELS_PER_PAGE = COLS * ROWS  # 24
 
 # Label dimensions (mm)
 LABEL_WIDTH = 70.0
-LABEL_HEIGHT = 37.0
+LABEL_HEIGHT = 37.125  # 297/8 exactly (must match physical grid)
 
 # Padding within each label cell (keeps content off pre-cut borders)
 LABEL_PAD_X = 2.0   # mm inset from left/right edges
-LABEL_PAD_Y = 3.0   # mm inset from top/bottom edges (keeps content inside printer margins)
+LABEL_PAD_Y = 1.0   # mm inset from top/bottom edges (safe print margin)
 
 # Margins to center the grid on the page
 MARGIN_LEFT = (A4_WIDTH_MM - COLS * LABEL_WIDTH) / 2  # ≈ 0 mm
 MARGIN_TOP = (A4_HEIGHT_MM - ROWS * LABEL_HEIGHT) / 2  # ≈ 0.5 mm
 
 # Barcode sizing
-BARCODE_MAX_WIDTH_RATIO = 0.88  # max 88% of label width (accounts for padding)
-BARCODE_HEIGHT_MM = 20.0  # default barcode height (profiles may override)
+BARCODE_MAX_WIDTH_RATIO = 0.92  # max 92% of label width (wider for better scanning)
+BARCODE_HEIGHT_MM = 24.0  # default barcode height (profiles may override)
 
 # Font settings
-FONT_TOP = "Helvetica"
-FONT_TOP_SIZE = 9
-FONT_BOTTOM = "Helvetica"
-FONT_BOTTOM_SIZE = 9
+FONT_TOP = "Helvetica-Bold"
+FONT_TOP_SIZE = 7
+FONT_BOTTOM = "Helvetica-Bold"
+FONT_BOTTOM_SIZE = 7
 
 # Profiles -------------------------------------------------------------------
 # Each profile defines:
@@ -66,16 +66,23 @@ PROFILES = {
     "COLLI": {
         "top_fields": [
             {"key": "Testo Superiore 1", "prefix": ""},
-            {"key": "Testo Superiore 2", "prefix": "PO: "},
-            {"key": "Testo Superiore 3", "prefix": "Quantità: "},
+            {"key": "Testo Superiore 2", "prefix": "PO "},
+            {"key": "Testo Superiore 3", "prefix": "Q.tà "},
         ],
         "bottom_field": "Testo Inferiore",
         "has_repeat": False,
-        "description": "CARTONE + PO + Quantità in alto, Barcode al centro, QVC in basso",
+        "description": "CARTONE + PO + Quantità in alto, Barcode QVC al centro, QVC in basso",
+        "field_info": {
+            "top1": "CARTONE",
+            "top2": "Codice PO",
+            "top3": "Quantità",
+            "barcode": "Codice QVC",
+            "bottom": "Codice QVC",
+        },
         # Layout overrides for 3-line labels
-        "line_spacing_mm": 3.0,
-        "font_top_size": 9,
-        "barcode_height_mm": 14.5,
+        "line_spacing_mm": 2.2,
+        "font_top_size": 7,
+        "barcode_height_mm": 24.0,
         # Preset column mapping
         "default_mapping": {
             "Codice Barcode": "QVC",
@@ -88,14 +95,21 @@ PROFILES = {
     "SKT": {
         "top_fields": [
             {"key": "Testo Superiore 1", "prefix": ""},
-            {"key": "Testo Superiore 2", "prefix": "PO: "},
+            {"key": "Testo Superiore 2", "prefix": "PO "},
         ],
         "bottom_field": "Testo Inferiore",
         "has_repeat": True,
         "repeat_field": "Numero Copie",
         "description": "SKT + PO in alto, Barcode QVC al centro, QVC in basso (Qta = n° copie)",
-        "line_spacing_mm": 3.0,
-        "barcode_height_mm": 17.5,
+        "field_info": {
+            "top1": "Codice SKT",
+            "top2": "Codice PO",
+            "barcode": "Codice QVC",
+            "bottom": "Codice QVC",
+        },
+        "line_spacing_mm": 2.5,
+        "font_top_size": 9,
+        "barcode_height_mm": 24.0,
         # Preset column mapping
         "default_mapping": {
             "Codice Barcode": "Codice QVC",
@@ -122,6 +136,28 @@ def read_excel_data(path: str) -> list[dict[str, Any]]:
     """Return all rows as a list of dicts."""
     df = pd.read_excel(path)
     return df.to_dict(orient="records")
+
+
+def get_dummy_records(profile: str, count: int = 24) -> list[dict[str, Any]]:
+    """Return dummy records for preview generation."""
+    prof = PROFILES[profile]
+    field_info = prof.get("field_info", {})
+    mapping = prof.get("default_mapping", {})
+    records = []
+    
+    for _ in range(count):
+        rec = {}
+        if "Codice Barcode" in mapping:
+            rec[mapping["Codice Barcode"]] = field_info.get("barcode", "BARCODE")
+        for i in range(1, 4):
+            key = f"Testo Superiore {i}"
+            if key in mapping:
+                rec[mapping[key]] = field_info.get(f"top{i}", f"Testo {i}")
+        if "Testo Inferiore" in mapping:
+            rec[mapping["Testo Inferiore"]] = field_info.get("bottom", "Testo Inferiore")
+        records.append(rec)
+    return records
+
 
 
 # ---------------------------------------------------------------------------
@@ -173,8 +209,8 @@ def generate_barcode_image(code_value: str) -> ImageReader:
     buf = io.BytesIO()
     code128.write(buf, options={
         "write_text": False,       # no built-in text
-        "module_height": 15.0,     # mm height of bars
-        "module_width": 0.33,      # mm width of narrowest bar
+        "module_height": 30.0,     # mm height of bars (tall for ≥25mm on label)
+        "module_width": 0.38,      # mm width of narrowest bar (wider for reliability)
         "quiet_zone": 2.0,         # mm quiet zone
         "dpi": 300,
     })
@@ -194,8 +230,8 @@ def _generate_barcode_svg_data(code_value: str) -> tuple[list[dict], float, floa
     buf = io.BytesIO()
     code128.write(buf, options={
         "write_text": False,
-        "module_height": 15.0,
-        "module_width": 0.33,
+        "module_height": 30.0,
+        "module_width": 0.38,
         "quiet_zone": 2.0,
     })
     svg_bytes = buf.getvalue()
@@ -285,6 +321,16 @@ def _label_origin(index: int, offset_x: float, offset_y: float) -> tuple[float, 
     return x_mm * mm, y_mm * mm
 
 
+def draw_crop_mark_pdf(c, x_pt, y_pt):
+    length = 3.0 * mm
+    c.setStrokeColorRGB(0, 0, 0)
+    c.setLineWidth(0.3)
+    c.line(x_pt - length, y_pt, x_pt - 0.5 * mm, y_pt)
+    c.line(x_pt + 0.5 * mm, y_pt, x_pt + length, y_pt)
+    c.line(x_pt, y_pt - length, x_pt, y_pt - 0.5 * mm)
+    c.line(x_pt, y_pt + 0.5 * mm, x_pt, y_pt + length)
+
+
 def generate_pdf(
     records: list[dict[str, Any]],
     mapping: dict[str, str],
@@ -294,33 +340,11 @@ def generate_pdf(
     offset_y: float,
     output_path: str,
     layout_overrides: dict | None = None,
+    preview_mode: bool = False,
 ) -> str:
     """
     Generate a PDF of barcode labels.
-
-    Parameters
-    ----------
-    records : list of dicts
-        Data rows from Excel.
-    mapping : dict
-        Maps logical field names → Excel column names.
-        Required key: "Codice Barcode".
-        Optional keys: "Testo Superiore 1/2/3", "Codice QVC".
-    profile : str
-        "COLLI" or "SKT".
-    start_pos : int
-        1-based starting label position (1-24).
-    offset_x, offset_y : float
-        Calibration offsets in mm.
-    output_path : str
-        Destination PDF file path.
-    layout_overrides : dict, optional
-        Override layout params: pad_y_mm, gap_mm, line_spacing_mm,
-        font_size_pt, barcode_height_mm.
-
-    Returns
-    -------
-    str  –  The absolute path to the generated PDF.
+    If preview_mode is True, generates only one page, and draws dashed bounds and crop marks.
     """
     lo = layout_overrides or {}
     prof = PROFILES[profile]
@@ -331,47 +355,70 @@ def generate_pdf(
     records = _expand_records(records, mapping, profile)
 
     c = canvas.Canvas(output_path, pagesize=A4)
-    c.setTitle("Etichette Barcode")
+    if preview_mode:
+        c.setTitle(f"Anteprima - {profile}")
+    else:
+        c.setTitle("Etichette Barcode")
 
     label_idx = start_pos - 1  # 0-based position on first page
     page_started = True
 
     # Resolve layout values: override > profile > global default
     pad_y = lo.get("pad_y_mm", LABEL_PAD_Y)
-    gap_val = lo.get("gap_mm", 1.5)
-    ls_mm = lo.get("line_spacing_mm", prof.get("line_spacing_mm", 3.0))
+    gap_val = lo.get("gap_mm", 0.5)
+    ls_mm = lo.get("line_spacing_mm", prof.get("line_spacing_mm", 2.5))
     font_size = lo.get("font_size_pt", prof.get("font_top_size", FONT_TOP_SIZE))
     barcode_h_mm = lo.get("barcode_height_mm", prof.get("barcode_height_mm", BARCODE_HEIGHT_MM))
 
     for rec in records:
-        # Start a new page when the current one is full
         if label_idx >= LABELS_PER_PAGE:
+            if preview_mode:
+                break
             c.showPage()
             label_idx = 0
             page_started = True
 
         x, y = _label_origin(label_idx, offset_x, offset_y)
+        
+        if preview_mode:
+            # dashed border
+            c.setStrokeColorRGB(0.78, 0.78, 0.78)
+            c.setLineWidth(0.4)
+            c.setDash(3, 3)
+            c.rect(x, y, LABEL_WIDTH * mm, LABEL_HEIGHT * mm, stroke=1, fill=0)
+            c.setDash()
 
-        # ---- Layout zones (uniform spacing) --------------------------------
+            # crop marks
+            draw_crop_mark_pdf(c, x, y)
+            draw_crop_mark_pdf(c, x + LABEL_WIDTH * mm, y)
+            draw_crop_mark_pdf(c, x, y + LABEL_HEIGHT * mm)
+            draw_crop_mark_pdf(c, x + LABEL_WIDTH * mm, y + LABEL_HEIGHT * mm)
+
+        # ---- Layout zones (exact bounding box math) ------------------------
         label_top = y + LABEL_HEIGHT * mm
         label_bottom = y
-        cx = x + (LABEL_WIDTH * mm) / 2  # horizontal center
+        cx = x + (LABEL_WIDTH * mm) / 2
 
         content_top = label_top - pad_y * mm
         content_bottom = label_bottom + pad_y * mm
 
-        line_spacing = ls_mm * mm
-
         n_top = len(top_fields)
-        font_h = font_size * 0.3528 * mm  # pt → mm (approx)
-        gap = gap_val * mm  # uniform gap between zones
+        font_h = font_size * 0.3528 * mm
+        cap_h = font_h * 0.7
+        gap = gap_val * mm
 
-        # Zone boundaries (ReportLab: y=0 is page bottom)
-        top_zone_bottom = content_top - n_top * line_spacing
-        bottom_baseline = content_bottom + 1.0 * mm
-        bottom_zone_top = bottom_baseline + font_h
+        # Top text bounding box
+        y_first_line = content_top - cap_h
+        y_last_line = y_first_line - (n_top - 1) * (ls_mm * mm)
+        top_zone_bottom = y_last_line - font_h * 0.2
 
-        # Barcode zone: space between top text and bottom text
+        # Bottom text bounding box
+        bottom_font_size = font_size * 1.25
+        bottom_font_h = bottom_font_size * 0.3528 * mm
+        bottom_baseline = content_bottom + bottom_font_h * 0.2
+        bottom_zone_top = bottom_baseline + bottom_font_h * 0.7
+
+        # Barcode area
         barcode_area_top = top_zone_bottom - gap
         barcode_area_bottom = bottom_zone_top + gap
         barcode_available = barcode_area_top - barcode_area_bottom
@@ -386,7 +433,7 @@ def generate_pdf(
                 text = prefix + str(rec[col_name])
             else:
                 text = ""
-            text_y = content_top - (i + 1) * line_spacing
+            text_y = y_first_line - i * (ls_mm * mm)
             c.drawCentredString(cx, text_y, text)
 
         # ---- Barcode -------------------------------------------------------
@@ -396,37 +443,29 @@ def generate_pdf(
         if barcode_value:
             img = generate_barcode_image(barcode_value)
 
-            iw, ih = img.getSize()
             max_w = LABEL_WIDTH * BARCODE_MAX_WIDTH_RATIO * mm
-            scale = max_w / iw
-            draw_w = iw * scale
-            draw_h = ih * scale
-
-            # Clamp to configured max height
-            max_h = barcode_h_mm * mm
-            if draw_h > max_h:
-                scale2 = max_h / draw_h
-                draw_w *= scale2
-                draw_h = max_h
+            
+            draw_w = max_w
+            draw_h = barcode_h_mm * mm
 
             # Dynamic clamp: never exceed available space
             if barcode_available > 0 and draw_h > barcode_available:
-                clamp_scale = barcode_available / draw_h
-                draw_w *= clamp_scale
                 draw_h = barcode_available
 
             # Center barcode in its zone
             barcode_mid = (barcode_area_top + barcode_area_bottom) / 2
             barcode_y = barcode_mid - draw_h / 2
             barcode_x = x + (LABEL_WIDTH * mm - draw_w) / 2
+            
             c.drawImage(img, barcode_x, barcode_y, width=draw_w, height=draw_h,
-                        preserveAspectRatio=True, anchor="c")
+                        preserveAspectRatio=False, anchor="c")
 
         # ---- Bottom text (Testo Inferiore) ---------------------------------
         bottom_col = mapping.get(bottom_field_key, "")
         if bottom_col and bottom_col in rec:
             bottom_text = str(rec[bottom_col])
-            c.setFont(FONT_BOTTOM, font_size)
+            # Ingrandiamo il testo sotto del 25% rispetto al testo sopra
+            c.setFont(FONT_BOTTOM, font_size * 1.25)
             c.drawCentredString(cx, bottom_baseline, bottom_text)
 
         # ---- Optional: draw light border for debugging (uncomment) ----------
@@ -512,31 +551,36 @@ def generate_svg(
             lx = MARGIN_LEFT + col * LABEL_WIDTH + offset_x
             ly = MARGIN_TOP + row * LABEL_HEIGHT + offset_y
 
-            # ---- Layout zones (uniform spacing) --------------------------
+            # ---- Layout zones (exact bounding box math) ------------------------
             # Resolve layout values: override > profile > global default
             pad_y = lo.get("pad_y_mm", LABEL_PAD_Y)
-            gap_val = lo.get("gap_mm", 1.5)
-            ls_mm = lo.get("line_spacing_mm", prof.get("line_spacing_mm", 3.0))
+            gap_val = lo.get("gap_mm", 0.5)
+            ls_mm = lo.get("line_spacing_mm", prof.get("line_spacing_mm", 2.5))
             fs_pt = lo.get("font_size_pt", prof.get("font_top_size", FONT_TOP_SIZE))
             bc_h_mm = lo.get("barcode_height_mm", prof.get("barcode_height_mm", BARCODE_HEIGHT_MM))
 
+            # SVG coordinates (Y=0 is top, Y increases downwards)
             content_top = ly + pad_y
             content_bottom = ly + LABEL_HEIGHT - pad_y
             cx = lx + LABEL_WIDTH / 2
 
-            line_spacing = ls_mm
-            fs_svg = fs_pt * 0.3528  # pt → mm
-
             n_top = len(top_fields)
-            font_h = fs_svg
-            gap = gap_val  # mm uniform gap between zones
+            font_h = fs_pt * 0.3528
+            cap_h = font_h * 0.7
+            gap = gap_val
 
-            # Zone boundaries (SVG: y increases downward)
-            top_zone_bottom = content_top + n_top * line_spacing
-            bottom_baseline = content_bottom - 1.0
-            bottom_zone_top = bottom_baseline - font_h
-
-            # Barcode zone
+            # Top text bounding box (Y goes down)
+            y_first_line = content_top + cap_h
+            y_last_line = y_first_line + (n_top - 1) * ls_mm
+            top_zone_bottom = y_last_line + font_h * 0.2
+            
+            # Bottom text bounding box
+            bottom_font_size = fs_pt * 1.25
+            bottom_font_h = bottom_font_size * 0.3528
+            bottom_baseline = content_bottom - bottom_font_h * 0.2
+            bottom_zone_top = bottom_baseline - bottom_font_h * 0.7
+            
+            # Barcode area (SVG: top is smaller Y, bottom is larger Y)
             barcode_area_top = top_zone_bottom + gap
             barcode_area_bottom = bottom_zone_top - gap
             barcode_available = barcode_area_bottom - barcode_area_top
@@ -548,14 +592,14 @@ def generate_svg(
                 col_name = mapping.get(field_key, "")
                 text_val = prefix + str(rec[col_name]) if (col_name and col_name in rec) else ""
 
-                ty = content_top + (i + 1) * line_spacing
+                ty = y_first_line + i * ls_mm
                 t = ET.SubElement(svg, "text", {
-                    "x": str(cx),
-                    "y": str(ty),
+                    "x": f"{cx:.3f}",
+                    "y": f"{ty:.3f}",
                     "text-anchor": "middle",
                     "font-family": "Helvetica, Arial, sans-serif",
                     "font-weight": "bold",
-                    "font-size": f"{fs_svg:.2f}",
+                    "font-size": f"{fs_pt * 0.3528:.2f}",
                     "fill": "black",
                 })
                 t.text = text_val
@@ -568,22 +612,15 @@ def generate_svg(
                 rects, bc_w, bc_h = _generate_barcode_svg_data(barcode_value)
 
                 max_w = LABEL_WIDTH * BARCODE_MAX_WIDTH_RATIO
-                scale = max_w / bc_w if bc_w > 0 else 1.0
-
-                scaled_h = bc_h * scale
-                max_h = bc_h_mm
-                if scaled_h > max_h:
-                    scale *= max_h / scaled_h
-                    scaled_h = max_h
-
-                scaled_w = bc_w * scale
+                scale_x = max_w / bc_w if bc_w > 0 else 1.0
+                scale_y = bc_h_mm / bc_h if bc_h > 0 else 1.0
 
                 # Dynamic clamp: never exceed available space
-                if barcode_available > 0 and scaled_h > barcode_available:
-                    clamp_scale = barcode_available / scaled_h
-                    scale *= clamp_scale
-                    scaled_w = bc_w * scale
-                    scaled_h = barcode_available
+                if barcode_available > 0 and (bc_h * scale_y) > barcode_available:
+                    scale_y = barcode_available / bc_h
+
+                scaled_w = bc_w * scale_x
+                scaled_h = bc_h * scale_y
 
                 # Center barcode in its zone
                 barcode_mid = (barcode_area_top + barcode_area_bottom) / 2
@@ -591,7 +628,7 @@ def generate_svg(
                 bc_y = barcode_mid - scaled_h / 2
 
                 g = ET.SubElement(svg, "g", {
-                    "transform": f"translate({bc_x:.3f},{bc_y:.3f}) scale({scale:.6f})",
+                    "transform": f"translate({bc_x:.3f},{bc_y:.3f}) scale({scale_x:.6f}, {scale_y:.6f})",
                 })
                 for r in rects:
                     ET.SubElement(g, "rect", {
@@ -612,7 +649,8 @@ def generate_svg(
                     "text-anchor": "middle",
                     "font-family": "Helvetica, Arial, sans-serif",
                     "font-weight": "bold",
-                    "font-size": f"{fs_svg:.2f}",
+                    # Ingrandito il font in basso del 25%
+                    "font-size": f"{(fs_svg * 1.25):.2f}",
                     "fill": "black",
                 })
                 t.text = bottom_text
@@ -632,3 +670,6 @@ def generate_svg(
         output_files.append(os.path.abspath(svg_path))
 
     return output_files
+
+
+
