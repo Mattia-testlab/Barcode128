@@ -1,674 +1,253 @@
-"""
-label_generator.py – Core engine for barcode label PDF generation.
-
-Reads Excel data, generates Code 128 barcodes, and produces a PDF
-with labels arranged in a 3×8 grid on A4 sheets (70×37 mm each).
-"""
-
-import io
-import json
 import os
-import xml.etree.ElementTree as ET
-from typing import Any
-
+import io
+import tempfile
 import pandas as pd
 import barcode
-from barcode.writer import ImageWriter, SVGWriter
+from barcode.writer import ImageWriter
+from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
-from reportlab.pdfgen import canvas
-from reportlab.lib.utils import ImageReader
+from PIL import Image
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-CONFIG_FILE = "config.json"
-
-# A4 dimensions in mm
-A4_WIDTH_MM = 210
-A4_HEIGHT_MM = 297
-
-# Label grid
+# ==========================================
+# PAGE & LABEL CONSTANTS
+# ==========================================
+PAGE_WIDTH, PAGE_HEIGHT = A4  # 210mm x 297mm
 COLS = 3
 ROWS = 8
-LABELS_PER_PAGE = COLS * ROWS  # 24
 
-# Label dimensions (mm)
-LABEL_WIDTH = 70.0
-LABEL_HEIGHT = 37.125  # 297/8 exactly (must match physical grid)
+LABEL_WIDTH = 70.0 * mm
+LABEL_HEIGHT = 37.125 * mm  # exactly 297 / 8
 
-# Padding within each label cell (keeps content off pre-cut borders)
-LABEL_PAD_X = 2.0   # mm inset from left/right edges
-LABEL_PAD_Y = 4.5   # mm inset from top/bottom edges (safe print margin)
-
-# Margins to center the grid on the page
-MARGIN_LEFT = (A4_WIDTH_MM - COLS * LABEL_WIDTH) / 2  # ≈ 0 mm
-MARGIN_TOP = (A4_HEIGHT_MM - ROWS * LABEL_HEIGHT) / 2  # ≈ 0.5 mm
-
-# Barcode sizing
-BARCODE_MAX_WIDTH_RATIO = 0.92  # max 92% of label width (wider for better scanning)
-BARCODE_HEIGHT_MM = 19.0  # default barcode height (profiles may override)
-
-# Font settings
-FONT_TOP = "Helvetica-Bold"
-FONT_TOP_SIZE = 7
-FONT_BOTTOM = "Helvetica-Bold"
-FONT_BOTTOM_SIZE = 7
-
-# Profiles -------------------------------------------------------------------
-# Each profile defines:
-#   top_fields  – list of {"key": logical name, "prefix": optional prefix string}
-#   bottom_field – logical name for text below barcode (e.g. QVC)
-#   description – human-readable description
-
-PROFILES = {
-    "COLLI": {
-        "top_fields": [
-            {"key": "Testo Superiore 1", "prefix": ""},
-            {"key": "Testo Superiore 2", "prefix": "PO: "},
-            {"key": "Testo Superiore 3", "prefix": "Quantità: "},
-        ],
-        "bottom_field": "",
-        "has_repeat": False,
-        "description": "CARTONE + PO + Quantità in alto, Barcode QVC al centro",
-        "field_info": {
-            "top1": "CARTONE",
-            "top2": "Codice PO",
-            "top3": "Quantità",
-            "barcode": "Codice QVC",
-            "bottom": "Codice QVC"
-        },
-        # Layout overrides for 3-line labels
-        "line_spacing_mm": 3.5,
-        "font_top_size": 9,
-        "barcode_height_mm": 19.0,
-        # Preset column mapping
-        "default_mapping": {
-            "Codice Barcode": "QVC",
-            "Testo Superiore 1": "CARTONE",
-            "Testo Superiore 2": "PO",
-            "Testo Superiore 3": "Quantità"
-        },
-    },
-    "SKT": {
-        "top_fields": [
-            {"key": "Testo Superiore 1", "prefix": ""},
-            {"key": "Testo Superiore 2", "prefix": "PO "},
-        ],
-        "bottom_field": "Testo Inferiore",
-        "has_repeat": True,
-        "repeat_field": "Numero Copie",
-        "description": "SKT + PO in alto, Barcode QVC al centro, QVC in basso (Qta = n° copie)",
-        "field_info": {
-            "top1": "Codice SKT",
-            "top2": "Codice PO",
-            "barcode": "Codice QVC",
-            "bottom": "Codice QVC",
-        },
-        "line_spacing_mm": 2.5,
-        "font_top_size": 9,
-        "barcode_height_mm": 19.0,
-        # Preset column mapping
-        "default_mapping": {
-            "Codice Barcode": "Codice QVC",
-            "Testo Superiore 1": "SKT",
-            "Testo Superiore 2": "Numero PO",
-            "Testo Inferiore": "Codice QVC",
-            "Numero Copie": "Qta",
-        },
-    },
+# ==========================================
+# DEFAULT LAYOUT PARAMETERS
+# ==========================================
+DEFAULT_LAYOUT = {
+    # Spacing and margins
+    "margin_y": 4.5 * mm,         # Top and bottom inner margin
+    "margin_x": 2.0 * mm,         # Left and right inner margin
+    "text_barcode_spacing": 0.5 * mm,
+    # Barcode
+    "barcode_max_width_pct": 0.92, # Barcode max width relative to label width
+    "barcode_height": 19.0 * mm,   # Default height
+    # Profile "COLLI" overrides
+    "colli_font_size": 7,
+    "colli_line_spacing": 2.2 * mm,
+    # Profile "SKT" overrides
+    "skt_font_size": 9,
+    "skt_line_spacing": 2.5 * mm,
 }
 
-
-# ---------------------------------------------------------------------------
-# Excel helpers
-# ---------------------------------------------------------------------------
-
-def read_excel_headers(path: str) -> list[str]:
-    """Return the column headers of the Excel file."""
-    df = pd.read_excel(path, nrows=0)
+def read_excel_headers(file_path):
+    """
+    Reads only the headers of the uploaded Excel file.
+    Returns a list of column names.
+    """
+    df = pd.read_excel(file_path, nrows=0)
     return list(df.columns)
 
-
-def read_excel_data(path: str) -> list[dict[str, Any]]:
-    """Return all rows as a list of dicts."""
-    df = pd.read_excel(path)
-    return df.to_dict(orient="records")
-
-
-def get_dummy_records(profile: str, count: int = 24) -> list[dict[str, Any]]:
-    """Return dummy records for preview generation."""
-    prof = PROFILES[profile]
-    field_info = prof.get("field_info", {})
-    mapping = prof.get("default_mapping", {})
-    records = []
-    
-    for _ in range(count):
-        rec = {}
-        if "Codice Barcode" in mapping:
-            rec[mapping["Codice Barcode"]] = field_info.get("barcode", "BARCODE")
-        for i in range(1, 4):
-            key = f"Testo Superiore {i}"
-            if key in mapping:
-                rec[mapping[key]] = field_info.get(f"top{i}", f"Testo {i}")
-        if "Testo Inferiore" in mapping:
-            rec[mapping["Testo Inferiore"]] = field_info.get("bottom", "Testo Inferiore")
-        records.append(rec)
-    return records
-
-
-
-# ---------------------------------------------------------------------------
-# Config persistence
-# ---------------------------------------------------------------------------
-
-def _config_path(directory: str) -> str:
-    return os.path.join(directory, CONFIG_FILE)
-
-
-def load_config(directory: str) -> dict | None:
-    """Load saved mapping config from *directory*, or return None."""
-    p = _config_path(directory)
-    if os.path.exists(p):
-        with open(p, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return None
-
-
-def save_config(directory: str, cfg: dict) -> None:
-    """Persist mapping config to *directory*/config.json."""
-    p = _config_path(directory)
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
-
-
-def config_matches(config: dict, headers: list[str]) -> bool:
-    """Check if the saved config's mapped columns are still in the headers."""
-    mapping = config.get("mapping", {})
-    for col in mapping.values():
-        if col not in headers:
-            return False
-    return True
-
-
-# ---------------------------------------------------------------------------
-# Barcode generation
-# ---------------------------------------------------------------------------
-
-def generate_barcode_image(code_value: str) -> ImageReader:
+def generate_barcode_image(data):
     """
-    Generate a Code 128 barcode as an in-memory PNG and return a
-    ReportLab-compatible ImageReader.  Human-readable text is disabled;
-    we print it ourselves for better layout control.
+    Generates a Code 128 barcode image (PIL Image) in memory.
     """
-    code_value = str(code_value).strip()
-    code128 = barcode.get("code128", code_value, writer=ImageWriter())
-
-    buf = io.BytesIO()
-    code128.write(buf, options={
-        "write_text": False,       # no built-in text
-        "module_height": 30.0,     # mm height of bars (tall for ≥25mm on label)
-        "module_width": 0.38,      # mm width of narrowest bar (wider for reliability)
-        "quiet_zone": 2.0,         # mm quiet zone
-        "dpi": 300,
-    })
-    buf.seek(0)
-    return ImageReader(buf)
-
-
-def _generate_barcode_svg_data(code_value: str) -> tuple[list[dict], float, float]:
-    """
-    Generate a Code 128 barcode as SVG and return
-    (rect_list, width_mm, height_mm).
-    Each rect dict has keys: x, y, width, height (all floats in mm).
-    """
-    code_value = str(code_value).strip()
-    code128 = barcode.get("code128", code_value, writer=SVGWriter())
-
-    buf = io.BytesIO()
-    code128.write(buf, options={
+    code128 = barcode.get("code128", data, writer=ImageWriter())
+    # Generate barcode without text
+    options = {
         "write_text": False,
-        "module_height": 30.0,
-        "module_width": 0.38,
-        "quiet_zone": 2.0,
-    })
-    svg_bytes = buf.getvalue()
+        "quiet_zone": 1.0,
+        "module_width": 0.2, # thin lines for good resolution
+        "module_height": 15.0,
+        "dpi": 300
+    }
+    img_byte_arr = io.BytesIO()
+    code128.write(img_byte_arr, options=options)
+    img_byte_arr.seek(0)
+    return Image.open(img_byte_arr)
 
-    SVG_NS = "http://www.w3.org/2000/svg"
-    root = ET.fromstring(svg_bytes)
-
-    # Dimensions from width/height attributes (e.g. "85.0mm")
-    w_str = root.get("width", "0").replace("mm", "").strip()
-    h_str = root.get("height", "0").replace("mm", "").strip()
-    bc_width = float(w_str)
-    bc_height = float(h_str)
-
-    def _strip_mm(val: str) -> float:
-        """Parse an SVG dimension value, stripping optional 'mm' suffix."""
-        return float(str(val).replace("mm", "").strip())
-
-    rects: list[dict] = []
-    for elem in root.iter(f"{{{SVG_NS}}}rect"):
-        # Skip background rects that use percentage dimensions
-        w_val = elem.get("width", "0")
-        h_val = elem.get("height", "0")
-        if "%" in str(w_val) or "%" in str(h_val):
-            continue
-        try:
-            rects.append({
-                "x": _strip_mm(elem.get("x", "0")),
-                "y": _strip_mm(elem.get("y", "0")),
-                "width": _strip_mm(w_val),
-                "height": _strip_mm(h_val),
-            })
-        except ValueError:
-            continue
-
-    return rects, bc_width, bc_height
-
-
-# ---------------------------------------------------------------------------
-# Record expansion (for repeat/copies field)
-# ---------------------------------------------------------------------------
-
-def _expand_records(
-    records: list[dict[str, Any]],
-    mapping: dict[str, str],
-    profile: str,
-) -> list[dict[str, Any]]:
+def calculate_label_position(index, offset_x_mm=0.0, offset_y_mm=0.0):
     """
-    If the profile has ``has_repeat=True``, duplicate each record N times
-    where N is read from the repeat-field column.  Otherwise return records
-    unchanged.
-    """
-    prof = PROFILES[profile]
-    if not prof.get("has_repeat", False):
-        return records
-
-    repeat_key = prof.get("repeat_field", "")
-    repeat_col = mapping.get(repeat_key, "")
-    if not repeat_col:
-        return records
-
-    expanded: list[dict[str, Any]] = []
-    for rec in records:
-        try:
-            n = int(rec.get(repeat_col, 1))
-        except (ValueError, TypeError):
-            n = 1
-        expanded.extend([rec] * max(n, 1))
-    return expanded
-
-
-# ---------------------------------------------------------------------------
-# PDF generation
-# ---------------------------------------------------------------------------
-
-def _label_origin(index: int, offset_x: float, offset_y: float) -> tuple[float, float]:
-    """
-    Return (x, y) in points for the top-left corner of label *index*
-    (0-based) on the current page, accounting for offsets.
+    Calculates the exact (x, y) coordinates of the bottom-left corner of a label
+    based on its index (0 to 23), taking into account global hardware offsets.
+    The grid starts from Top-Left, reading left-to-right, top-to-bottom.
     """
     col = index % COLS
     row = index // COLS
+    
+    # x is from left
+    x = (col * LABEL_WIDTH) + (offset_x_mm * mm)
+    
+    # y is from bottom (ReportLab coordinates)
+    # Row 0 is the top row, so its Y coordinate is top of page minus one label height.
+    y = PAGE_HEIGHT - ((row + 1) * LABEL_HEIGHT) + (offset_y_mm * mm)
+    
+    return x, y
 
-    x_mm = MARGIN_LEFT + col * LABEL_WIDTH + offset_x
-    # Y is measured from the BOTTOM in ReportLab, so we invert.
-    y_mm = A4_HEIGHT_MM - MARGIN_TOP - (row + 1) * LABEL_HEIGHT - offset_y
-
-    return x_mm * mm, y_mm * mm
-
-
-def draw_crop_mark_pdf(c, x_pt, y_pt):
-    length = 3.0 * mm
-    c.setStrokeColorRGB(0, 0, 0)
-    c.setLineWidth(0.3)
-    c.line(x_pt - length, y_pt, x_pt - 0.5 * mm, y_pt)
-    c.line(x_pt + 0.5 * mm, y_pt, x_pt + length, y_pt)
-    c.line(x_pt, y_pt - length, x_pt, y_pt - 0.5 * mm)
-    c.line(x_pt, y_pt + 0.5 * mm, x_pt, y_pt + length)
-
-
-def generate_pdf(
-    records: list[dict[str, Any]],
-    mapping: dict[str, str],
-    profile: str,
-    start_pos: int,
-    offset_x: float,
-    offset_y: float,
-    output_path: str,
-    layout_overrides: dict | None = None,
-    preview_mode: bool = False,
-) -> str:
+def process_data(df, profile, mapping):
     """
-    Generate a PDF of barcode labels.
-    If preview_mode is True, generates only one page, and draws dashed bounds and crop marks.
+    Processes the DataFrame according to the selected profile and mapping.
+    Handles 'N copies' for SKT.
+    Returns a list of dictionaries with extracted string components.
     """
-    lo = layout_overrides or {}
-    prof = PROFILES[profile]
-    top_fields = prof["top_fields"]
-    bottom_field_key = prof.get("bottom_field", "")
-
-    # Expand records for repeat/copies
-    records = _expand_records(records, mapping, profile)
-
-    c = canvas.Canvas(output_path, pagesize=A4)
-    if preview_mode:
-        c.setTitle(f"Anteprima - {profile}")
-    else:
-        c.setTitle("Etichette Barcode")
-
-    label_idx = start_pos - 1  # 0-based position on first page
-    page_started = True
-
-    # Resolve layout values: override > profile > global default
-    pad_y = lo.get("pad_y_mm", LABEL_PAD_Y)
-    gap_val = lo.get("gap_mm", 0.5)
-    ls_mm = lo.get("line_spacing_mm", prof.get("line_spacing_mm", 2.5))
-    font_size = lo.get("font_size_pt", prof.get("font_top_size", FONT_TOP_SIZE))
-    barcode_h_mm = lo.get("barcode_height_mm", prof.get("barcode_height_mm", BARCODE_HEIGHT_MM))
-
-    for rec in records:
-        if label_idx >= LABELS_PER_PAGE:
-            if preview_mode:
-                break
-            c.showPage()
-            label_idx = 0
-            page_started = True
-
-        x, y = _label_origin(label_idx, offset_x, offset_y)
+    labels_data = []
+    
+    for _, row in df.iterrows():
+        # Get Barcode Data
+        b_col = mapping.get("Codice Barcode")
+        if not b_col or b_col == "(nessuna)" or pd.isna(row.get(b_col)):
+            continue
+        barcode_value = str(row[b_col]).strip()
         
-        if preview_mode:
-            # dashed border
-            c.setStrokeColorRGB(0.78, 0.78, 0.78)
-            c.setLineWidth(0.4)
-            c.setDash(3, 3)
-            c.rect(x, y, LABEL_WIDTH * mm, LABEL_HEIGHT * mm, stroke=1, fill=0)
-            c.setDash()
-
-            # crop marks
-            draw_crop_mark_pdf(c, x, y)
-            draw_crop_mark_pdf(c, x + LABEL_WIDTH * mm, y)
-            draw_crop_mark_pdf(c, x, y + LABEL_HEIGHT * mm)
-            draw_crop_mark_pdf(c, x + LABEL_WIDTH * mm, y + LABEL_HEIGHT * mm)
-
-        # ---- Layout zones (exact bounding box math) ------------------------
-        label_top = y + LABEL_HEIGHT * mm
-        label_bottom = y
-        cx = x + (LABEL_WIDTH * mm) / 2
-
-        content_top = label_top - pad_y * mm
-        content_bottom = label_bottom + pad_y * mm
-
-        n_top = len(top_fields)
-        font_h = font_size * 0.3528 * mm
-        cap_h = font_h * 0.7
-        gap = gap_val * mm
-
-        # Top text bounding box
-        y_first_line = content_top - cap_h
-        y_last_line = y_first_line - (n_top - 1) * (ls_mm * mm)
-        top_zone_bottom = y_last_line - font_h * 0.2
-
-        # Bottom text bounding box
-        bottom_font_size = font_size * 1.25
-        bottom_font_h = bottom_font_size * 0.3528 * mm
-        bottom_baseline = content_bottom + bottom_font_h * 0.2
-        bottom_zone_top = bottom_baseline + bottom_font_h * 0.7
-
-        # Barcode area
-        barcode_area_top = top_zone_bottom - gap
-        barcode_area_bottom = bottom_zone_top + gap
-        barcode_available = barcode_area_top - barcode_area_bottom
-
-        # ---- Top text lines ------------------------------------------------
-        c.setFont(FONT_TOP, font_size)
-        for i, field_def in enumerate(top_fields):
-            field_key = field_def["key"]
-            prefix = field_def.get("prefix", "")
-            col_name = mapping.get(field_key, "")
-            if col_name and col_name in rec:
-                text = prefix + str(rec[col_name])
-            else:
-                text = ""
-            text_y = y_first_line - i * (ls_mm * mm)
-            c.drawCentredString(cx, text_y, text)
-
-        # ---- Barcode -------------------------------------------------------
-        barcode_col = mapping.get("Codice Barcode", "")
-        barcode_value = str(rec.get(barcode_col, "")).strip()
-
-        if barcode_value:
-            img = generate_barcode_image(barcode_value)
-
-            max_w = LABEL_WIDTH * BARCODE_MAX_WIDTH_RATIO * mm
+        # Determine number of copies (Default 1)
+        copies = 1
+        if profile == "SKT":
+            q_col = mapping.get("Numero Copie")
+            if q_col and q_col != "(nessuna)" and not pd.isna(row.get(q_col)):
+                try:
+                    copies = int(row[q_col])
+                except ValueError:
+                    copies = 1
+                    
+        # Extract Texts
+        testo_1_col = mapping.get("Testo Superiore 1")
+        testo_2_col = mapping.get("Testo Superiore 2")
+        testo_3_col = mapping.get("Testo Superiore 3")
+        
+        testo_1 = str(row[testo_1_col]).strip() if testo_1_col and testo_1_col != "(nessuna)" and not pd.isna(row.get(testo_1_col)) else ""
+        testo_2 = str(row[testo_2_col]).strip() if testo_2_col and testo_2_col != "(nessuna)" and not pd.isna(row.get(testo_2_col)) else ""
+        testo_3 = str(row[testo_3_col]).strip() if testo_3_col and testo_3_col != "(nessuna)" and not pd.isna(row.get(testo_3_col)) else ""
+        
+        # Format Text blocks based on Profile
+        text_lines = []
+        if profile == "COLLI":
+            # Riga 1: {Numero Cartone}
+            if testo_1: text_lines.append(testo_1)
+            # Riga 2: PO: {Numero PO}
+            if testo_2: text_lines.append(f"PO: {testo_2}")
+            # Riga 3: Quantità: {Quantità}
+            if testo_3: text_lines.append(f"Quantità: {testo_3}")
+                
+        elif profile == "SKT":
+            # Riga 1: {Codice SKT}
+            if testo_1: text_lines.append(testo_1)
+            # Riga 2: PO: {Numero PO}
+            if testo_2: text_lines.append(f"PO: {testo_2}")
             
-            draw_w = max_w
-            draw_h = barcode_h_mm * mm
-
-            # Dynamic clamp: never exceed available space
-            if barcode_available > 0 and draw_h > barcode_available:
-                draw_h = barcode_available
-
-            # Center barcode in its zone
-            barcode_mid = (barcode_area_top + barcode_area_bottom) / 2
-            barcode_y = barcode_mid - draw_h / 2
-            barcode_x = x + (LABEL_WIDTH * mm - draw_w) / 2
+        data_packet = {
+            "barcode": barcode_value,
+            "texts": text_lines
+        }
+        
+        for _ in range(copies):
+            labels_data.append(data_packet)
             
-            c.drawImage(img, barcode_x, barcode_y, width=draw_w, height=draw_h,
-                        preserveAspectRatio=False, anchor="c")
+    return labels_data
 
-        # ---- Bottom text (Testo Inferiore) ---------------------------------
-        bottom_col = mapping.get(bottom_field_key, "")
-        if bottom_col and bottom_col in rec:
-            bottom_text = str(rec[bottom_col])
-            # Ingrandiamo il testo sotto del 25% rispetto al testo sopra
-            c.setFont(FONT_BOTTOM, font_size * 1.25)
-            c.drawCentredString(cx, bottom_baseline, bottom_text)
+def generate_pdf(df, profile, mapping, start_position=1, offset_x=0.0, offset_y=0.0, layout_overrides=None):
+    """
+    Main entry point for generating the final PDF.
+    Start position is 1-indexed (1 to 24).
+    """
+    if layout_overrides is None:
+        layout_overrides = {}
+        
+    layout = DEFAULT_LAYOUT.copy()
+    
+    # Merge overrides (they come in mm from UI, so multiply by mm if needed, but we assume UI sends exact float values in mm/pt)
+    if "margin_y" in layout_overrides: layout["margin_y"] = layout_overrides["margin_y"] * mm
+    if "margin_x" in layout_overrides: layout["margin_x"] = layout_overrides["margin_x"] * mm
+    if "text_barcode_spacing" in layout_overrides: layout["text_barcode_spacing"] = layout_overrides["text_barcode_spacing"] * mm
+    if "barcode_height" in layout_overrides: layout["barcode_height"] = layout_overrides["barcode_height"] * mm
+    if "line_spacing" in layout_overrides:
+        layout["colli_line_spacing"] = layout_overrides["line_spacing"] * mm
+        layout["skt_line_spacing"] = layout_overrides["line_spacing"] * mm
+    if "font_size" in layout_overrides:
+        layout["colli_font_size"] = layout_overrides["font_size"]
+        layout["skt_font_size"] = layout_overrides["font_size"]
 
-        # ---- Optional: draw light border for debugging (uncomment) ----------
-        # c.setStrokeColorRGB(0.85, 0.85, 0.85)
-        # c.rect(x, y, LABEL_WIDTH * mm, LABEL_HEIGHT * mm, stroke=1, fill=0)
+    # Profile specific setup
+    font_name = "Helvetica-Bold"
+    if profile == "COLLI":
+        font_size = layout["colli_font_size"]
+        line_spacing = layout["colli_line_spacing"]
+    else:  # SKT
+        font_size = layout["skt_font_size"]
+        line_spacing = layout["skt_line_spacing"]
 
-        label_idx += 1
-
-    c.showPage()
+    # Validate start position
+    current_idx = max(0, start_position - 1)
+    
+    # Process data
+    labels_to_print = process_data(df, profile, mapping)
+    
+    # Initialization
+    temp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    c = canvas.Canvas(temp_pdf.name, pagesize=A4)
+    
+    for lbl in labels_to_print:
+        # Check if we need a new page
+        if current_idx >= 24:
+            c.showPage()
+            current_idx = 0
+            
+        # Get bottom-left corner of the label
+        lb_x, lb_y = calculate_label_position(current_idx, offset_x, offset_y)
+        
+        # Define the drawable area inside the label padding
+        draw_x_min = lb_x + layout["margin_x"]
+        draw_x_max = lb_x + LABEL_WIDTH - layout["margin_x"]
+        draw_width = draw_x_max - draw_x_min
+        
+        draw_y_top = lb_y + LABEL_HEIGHT - layout["margin_y"]
+        draw_y_bottom = lb_y + layout["margin_y"]
+        draw_height = draw_y_top - draw_y_bottom
+        
+        # 1. DRAW TEXT (Top-down)
+        c.setFont(font_name, font_size)
+        
+        current_y = draw_y_top
+        for text_line in lbl["texts"]:
+            # Move down by font size to baseline
+            current_y -= (font_size * 0.35)  # approx baseline adjustment
+            # X Centering
+            text_width = c.stringWidth(text_line, font_name, font_size)
+            text_x = draw_x_min + (draw_width - text_width) / 2.0
+            
+            c.drawString(text_x, current_y, text_line)
+            # Move down for next line
+            current_y -= line_spacing
+            
+        # 2. DRAW BARCODE
+        # Calculate remaining space
+        # Account for text-barcode spacing
+        barcode_top_y = current_y - layout["text_barcode_spacing"]
+        remaining_height = barcode_top_y - draw_y_bottom
+        
+        if remaining_height > 0:
+            barcode_img = generate_barcode_image(lbl["barcode"])
+            img_w, img_h = barcode_img.size
+            
+            # Constrain dimensions
+            bc_target_w = draw_width * layout["barcode_max_width_pct"]
+            bc_target_h = min(layout["barcode_height"], remaining_height)
+            
+            # Barcode aspect ratio check - usually we want to stretch Code128 properly
+            # but we just fit it in the space.
+            # python-barcode ImageWriter creates an image with margins, we crop them conceptually or just resize.
+            
+            # Center vertically in the remaining space
+            bc_y = draw_y_bottom + (remaining_height - bc_target_h) / 2.0
+            
+            # Center horizontally
+            bc_x = draw_x_min + (draw_width - bc_target_w) / 2.0
+            
+            # Save tmp image for reportlab
+            tmp_img_path = tempfile.mktemp(suffix=".png")
+            barcode_img.save(tmp_img_path)
+            
+            c.drawImage(tmp_img_path, bc_x, bc_y, width=bc_target_w, height=bc_target_h)
+            os.remove(tmp_img_path)
+            
+        current_idx += 1
+        
     c.save()
-    return os.path.abspath(output_path)
-
-
-# ---------------------------------------------------------------------------
-# SVG generation
-# ---------------------------------------------------------------------------
-
-def generate_svg(
-    records: list[dict[str, Any]],
-    mapping: dict[str, str],
-    profile: str,
-    start_pos: int,
-    offset_x: float,
-    offset_y: float,
-    output_path: str,
-    layout_overrides: dict | None = None,
-) -> list[str]:
-    """
-    Generate one SVG file per page of barcode labels (vector, editable
-    in Canva / Illustrator / Inkscape).
-
-    Returns a list of absolute paths to the generated SVG files.
-    """
-    lo = layout_overrides or {}
-    SVG_NS = "http://www.w3.org/2000/svg"
-    prof = PROFILES[profile]
-    top_fields = prof["top_fields"]
-    bottom_field_key = prof.get("bottom_field", "")
-
-    # Expand records for repeat/copies
-    records = _expand_records(records, mapping, profile)
-
-    # ---- Split records into pages ----------------------------------------
-    pages: list[list[tuple[int, dict]]] = []
-    slot = start_pos - 1   # 0-based label slot on current page
-    rec_i = 0
-
-    while rec_i < len(records):
-        page: list[tuple[int, dict]] = []
-        while slot < LABELS_PER_PAGE and rec_i < len(records):
-            page.append((slot, records[rec_i]))
-            slot += 1
-            rec_i += 1
-        pages.append(page)
-        slot = 0
-
-    if not pages:
-        pages = [[]]
-
-    base, _ = os.path.splitext(output_path)
-    output_files: list[str] = []
-
-    for page_num, page_data in enumerate(pages):
-        ET.register_namespace("", SVG_NS)
-        svg = ET.Element("svg", {
-            "xmlns": SVG_NS,
-            "width": f"{A4_WIDTH_MM}mm",
-            "height": f"{A4_HEIGHT_MM}mm",
-            "viewBox": f"0 0 {A4_WIDTH_MM} {A4_HEIGHT_MM}",
-        })
-
-        # White background
-        ET.SubElement(svg, "rect", {
-            "width": str(A4_WIDTH_MM),
-            "height": str(A4_HEIGHT_MM),
-            "fill": "white",
-        })
-
-        for label_idx, rec in page_data:
-            col = label_idx % COLS
-            row = label_idx // COLS
-
-            lx = MARGIN_LEFT + col * LABEL_WIDTH + offset_x
-            ly = MARGIN_TOP + row * LABEL_HEIGHT + offset_y
-
-            # ---- Layout zones (exact bounding box math) ------------------------
-            # Resolve layout values: override > profile > global default
-            pad_y = lo.get("pad_y_mm", LABEL_PAD_Y)
-            gap_val = lo.get("gap_mm", 0.5)
-            ls_mm = lo.get("line_spacing_mm", prof.get("line_spacing_mm", 2.5))
-            fs_pt = lo.get("font_size_pt", prof.get("font_top_size", FONT_TOP_SIZE))
-            bc_h_mm = lo.get("barcode_height_mm", prof.get("barcode_height_mm", BARCODE_HEIGHT_MM))
-
-            # SVG coordinates (Y=0 is top, Y increases downwards)
-            content_top = ly + pad_y
-            content_bottom = ly + LABEL_HEIGHT - pad_y
-            cx = lx + LABEL_WIDTH / 2
-
-            n_top = len(top_fields)
-            font_h = fs_pt * 0.3528
-            cap_h = font_h * 0.7
-            gap = gap_val
-
-            # Top text bounding box (Y goes down)
-            y_first_line = content_top + cap_h
-            y_last_line = y_first_line + (n_top - 1) * ls_mm
-            top_zone_bottom = y_last_line + font_h * 0.2
-            
-            # Bottom text bounding box
-            bottom_font_size = fs_pt * 1.25
-            bottom_font_h = bottom_font_size * 0.3528
-            bottom_baseline = content_bottom - bottom_font_h * 0.2
-            bottom_zone_top = bottom_baseline - bottom_font_h * 0.7
-            
-            # Barcode area (SVG: top is smaller Y, bottom is larger Y)
-            barcode_area_top = top_zone_bottom + gap
-            barcode_area_bottom = bottom_zone_top - gap
-            barcode_available = barcode_area_bottom - barcode_area_top
-
-            # ---- Top text lines ------------------------------------------
-            for i, field_def in enumerate(top_fields):
-                field_key = field_def["key"]
-                prefix = field_def.get("prefix", "")
-                col_name = mapping.get(field_key, "")
-                text_val = prefix + str(rec[col_name]) if (col_name and col_name in rec) else ""
-
-                ty = y_first_line + i * ls_mm
-                t = ET.SubElement(svg, "text", {
-                    "x": f"{cx:.3f}",
-                    "y": f"{ty:.3f}",
-                    "text-anchor": "middle",
-                    "font-family": "Helvetica, Arial, sans-serif",
-                    "font-weight": "bold",
-                    "font-size": f"{fs_pt * 0.3528:.2f}",
-                    "fill": "black",
-                })
-                t.text = text_val
-
-            # ---- Barcode -------------------------------------------------
-            barcode_col = mapping.get("Codice Barcode", "")
-            barcode_value = str(rec.get(barcode_col, "")).strip()
-
-            if barcode_value:
-                rects, bc_w, bc_h = _generate_barcode_svg_data(barcode_value)
-
-                max_w = LABEL_WIDTH * BARCODE_MAX_WIDTH_RATIO
-                scale_x = max_w / bc_w if bc_w > 0 else 1.0
-                scale_y = bc_h_mm / bc_h if bc_h > 0 else 1.0
-
-                # Dynamic clamp: never exceed available space
-                if barcode_available > 0 and (bc_h * scale_y) > barcode_available:
-                    scale_y = barcode_available / bc_h
-
-                scaled_w = bc_w * scale_x
-                scaled_h = bc_h * scale_y
-
-                # Center barcode in its zone
-                barcode_mid = (barcode_area_top + barcode_area_bottom) / 2
-                bc_x = lx + (LABEL_WIDTH - scaled_w) / 2
-                bc_y = barcode_mid - scaled_h / 2
-
-                g = ET.SubElement(svg, "g", {
-                    "transform": f"translate({bc_x:.3f},{bc_y:.3f}) scale({scale_x:.6f}, {scale_y:.6f})",
-                })
-                for r in rects:
-                    ET.SubElement(g, "rect", {
-                        "x": str(r["x"]),
-                        "y": str(r["y"]),
-                        "width": str(r["width"]),
-                        "height": str(r["height"]),
-                        "fill": "black",
-                    })
-
-            # ---- Bottom text (Testo Inferiore) ---------------------------
-            bottom_col = mapping.get(bottom_field_key, "")
-            if bottom_col and bottom_col in rec:
-                bottom_text = str(rec[bottom_col])
-                t = ET.SubElement(svg, "text", {
-                    "x": str(cx),
-                    "y": str(bottom_baseline),
-                    "text-anchor": "middle",
-                    "font-family": "Helvetica, Arial, sans-serif",
-                    "font-weight": "bold",
-                    # Ingrandito il font in basso del 25%
-                    "font-size": f"{(fs_svg * 1.25):.2f}",
-                    "fill": "black",
-                })
-                t.text = bottom_text
-
-        # Write SVG file
-        if len(pages) == 1:
-            svg_path = f"{base}.svg"
-        else:
-            svg_path = f"{base}_pagina{page_num + 1}.svg"
-
-        tree = ET.ElementTree(svg)
-        ET.indent(tree, space="  ")
-        with open(svg_path, "w", encoding="utf-8") as f:
-            f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
-            tree.write(f, encoding="unicode", xml_declaration=False)
-
-        output_files.append(os.path.abspath(svg_path))
-
-    return output_files
-
-
-
+    return temp_pdf.name
