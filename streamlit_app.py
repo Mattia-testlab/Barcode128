@@ -77,10 +77,9 @@ def main():
                         <div style="font-weight: 700; font-size: 15px; color: #1565C0; margin-bottom: 10px;">📦 Profilo COLLI — Layout Etichetta</div>
                         <p style="font-size: 14px; color: #333; margin: 0; line-height: 1.6;">
                             <b>1.</b> In alto: <b>CARTONE</b><br>
-                            <b>2.</b> Sotto: <b>PO</b> + {codice PO}<br>
-                            <b>3.</b> Sotto: <b>Q.tà</b> + {quantità}<br>
-                            <b>4.</b> Al centro: <b>Barcode</b> ({Codice QVC})<br>
-                            <b>5.</b> In basso: <b>Codice QVC</b>
+                            <b>2.</b> Sotto: <b>PO:</b> + {codice PO}<br>
+                            <b>3.</b> Sotto: <b>Quantità:</b> + {quantità}<br>
+                            <b>4.</b> Al centro: <b>Barcode</b> ({Codice QVC})
                         </p>
                     </div>
                     """, unsafe_allow_html=True)
@@ -103,16 +102,16 @@ def main():
                 off_y = st.number_input("Offset Y (mm)", value=0.0, step=0.1)
 
                 with st.expander("🎛️ Regolazioni Layout"):
-                    lo_pad = st.slider("Margine interno (pad Y, mm) [Standard: 1.0]", 0.5, 6.0, 1.0, 0.5,
-                                       help="Distanza dal bordo superiore/inferiore dell'etichetta")
+                    lo_pad = st.slider("Margine interno (pad Y, mm) [Standard: 4.5]", 0.5, 6.0, 4.5, 0.5,
+                                       help="Distanza dal bordo superiore/inferiore dell'etichetta (min 4.5 consigliato per i bordi di stampa)")
                     lo_gap = st.slider("Spazio testo-barcode (mm) [Standard: 0.5]", 0.1, 4.0, 0.5, 0.1,
                                        help="Distanza tra le righe di testo e il barcode")
                     lo_ls = st.slider("Spaziatura righe testo (mm) [Standard: 2.2]", 1.5, 5.0, 2.2, 0.1,
                                       help="Distanza tra le righe di testo superiore")
                     lo_fs = st.slider("Dimensione font (pt) [Standard: 7]", 5, 14, 7, 1,
                                       help="Dimensione del testo superiore e inferiore")
-                    lo_bh = st.slider("Altezza max barcode (mm) [Standard: 24.0]", 15.0, 35.0, 24.0, 0.5,
-                                      help="Altezza del barcode (min 24.0mm consigliato)")
+                    lo_bh = st.slider("Altezza barcode (mm) [Standard: 19.0]", 10.0, 35.0, 19.0, 0.5,
+                                      help="Altezza del barcode (il barcode si restringe automaticamente se lo spazio verticale non è sufficiente)")
 
 
 

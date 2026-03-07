@@ -40,7 +40,7 @@ LABEL_HEIGHT = 37.125  # 297/8 exactly (must match physical grid)
 
 # Padding within each label cell (keeps content off pre-cut borders)
 LABEL_PAD_X = 2.0   # mm inset from left/right edges
-LABEL_PAD_Y = 1.0   # mm inset from top/bottom edges (safe print margin)
+LABEL_PAD_Y = 4.5   # mm inset from top/bottom edges (safe print margin)
 
 # Margins to center the grid on the page
 MARGIN_LEFT = (A4_WIDTH_MM - COLS * LABEL_WIDTH) / 2  # ≈ 0 mm
@@ -48,7 +48,7 @@ MARGIN_TOP = (A4_HEIGHT_MM - ROWS * LABEL_HEIGHT) / 2  # ≈ 0.5 mm
 
 # Barcode sizing
 BARCODE_MAX_WIDTH_RATIO = 0.92  # max 92% of label width (wider for better scanning)
-BARCODE_HEIGHT_MM = 24.0  # default barcode height (profiles may override)
+BARCODE_HEIGHT_MM = 19.0  # default barcode height (profiles may override)
 
 # Font settings
 FONT_TOP = "Helvetica-Bold"
@@ -66,30 +66,29 @@ PROFILES = {
     "COLLI": {
         "top_fields": [
             {"key": "Testo Superiore 1", "prefix": ""},
-            {"key": "Testo Superiore 2", "prefix": "PO "},
-            {"key": "Testo Superiore 3", "prefix": "Q.tà "},
+            {"key": "Testo Superiore 2", "prefix": "PO: "},
+            {"key": "Testo Superiore 3", "prefix": "Quantità: "},
         ],
-        "bottom_field": "Testo Inferiore",
+        "bottom_field": "",
         "has_repeat": False,
-        "description": "CARTONE + PO + Quantità in alto, Barcode QVC al centro, QVC in basso",
+        "description": "CARTONE + PO + Quantità in alto, Barcode QVC al centro",
         "field_info": {
             "top1": "CARTONE",
             "top2": "Codice PO",
             "top3": "Quantità",
             "barcode": "Codice QVC",
-            "bottom": "Codice QVC",
+            "bottom": "Codice QVC"
         },
         # Layout overrides for 3-line labels
-        "line_spacing_mm": 2.2,
-        "font_top_size": 7,
-        "barcode_height_mm": 24.0,
+        "line_spacing_mm": 3.5,
+        "font_top_size": 9,
+        "barcode_height_mm": 19.0,
         # Preset column mapping
         "default_mapping": {
             "Codice Barcode": "QVC",
             "Testo Superiore 1": "CARTONE",
             "Testo Superiore 2": "PO",
-            "Testo Superiore 3": "Quantità",
-            "Testo Inferiore": "QVC",
+            "Testo Superiore 3": "Quantità"
         },
     },
     "SKT": {
@@ -109,7 +108,7 @@ PROFILES = {
         },
         "line_spacing_mm": 2.5,
         "font_top_size": 9,
-        "barcode_height_mm": 24.0,
+        "barcode_height_mm": 19.0,
         # Preset column mapping
         "default_mapping": {
             "Codice Barcode": "Codice QVC",
