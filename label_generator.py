@@ -48,7 +48,7 @@ MARGIN_LEFT = (A4_WIDTH_MM - COLS * LABEL_WIDTH) / 2  # ≈ 0 mm
 MARGIN_TOP = (A4_HEIGHT_MM - ROWS * LABEL_HEIGHT) / 2  # ≈ 0.5 mm
 
 # Barcode sizing
-BARCODE_MAX_WIDTH_RATIO = 0.92  # max 92% of label width (wider for better scanning)
+BARCODE_MAX_WIDTH_RATIO = 0.95  # max 95% of label width (slightly wider, still safe on pre-cut labels)
 BARCODE_HEIGHT_MM = 20.0  # default barcode height (profiles may override)
 BOTTOM_FONT_SCALE = 1.30
 
