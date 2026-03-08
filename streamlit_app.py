@@ -103,12 +103,12 @@ def main():
                                        help="Distanza dal bordo superiore/inferiore dell'etichetta (min 4.5mm consigliato per evitare margini stampante)")
                     lo_gap = st.slider("Spazio testo-barcode (mm) [Standard: 0.5]", 0.1, 4.0, 0.5, 0.1,
                                        help="Distanza tra le righe di testo e il barcode")
-                    lo_ls = st.slider("Spaziatura righe testo (mm) [Standard: 2.5]", 2.0, 5.0, 2.5, 0.1,
-                                      help="Distanza tra le righe di testo superiore")
-                    lo_fs = st.slider("Dimensione font (pt) [Standard: 7]", 5, 14, 7, 1,
-                                      help="Dimensione del testo superiore e inferiore")
-                    lo_bh = st.slider("Altezza max barcode (mm) [Standard: 20.0]", 8.0, 35.0, 20.0, 0.5,
-                                      help="Altezza del barcode (potrebbe essere limitata dallo spazio disponibile tra i testi)")
+                    lo_ls = st.slider("Spaziatura righe testo (mm) [Standard: 2.7]", 2.0, 5.0, 2.7, 0.1,
+                                      help="Distanza tra le righe del testo superiore (leggermente aumentata per migliorare la leggibilità)")
+                    lo_fs = st.slider("Dimensione font (pt) [Standard: 8]", 5, 14, 8, 1,
+                                      help="Dimensione testo superiore; il testo inferiore viene aumentato automaticamente e ridotto solo se supera la larghezza etichetta")
+                    lo_bh = st.slider("Altezza max barcode (mm) [Standard: 19.0]", 8.0, 35.0, 19.0, 0.5,
+                                      help="Altezza massima del barcode: un po' più bassa per lasciare più respiro alle scritte")
 
 
 

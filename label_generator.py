@@ -17,6 +17,7 @@ from barcode.writer import ImageWriter, SVGWriter
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
 from reportlab.lib.utils import ImageReader
 
 # ---------------------------------------------------------------------------
@@ -49,6 +50,7 @@ MARGIN_TOP = (A4_HEIGHT_MM - ROWS * LABEL_HEIGHT) / 2  # ≈ 0.5 mm
 # Barcode sizing
 BARCODE_MAX_WIDTH_RATIO = 0.92  # max 92% of label width (wider for better scanning)
 BARCODE_HEIGHT_MM = 20.0  # default barcode height (profiles may override)
+BOTTOM_FONT_SCALE = 1.30
 
 # Font settings
 FONT_TOP = "Helvetica-Bold"
@@ -138,6 +140,27 @@ def _cell_to_text(value: Any) -> str:
     except TypeError:
         pass
     return str(value).strip()
+
+
+def _fit_font_size_pt(
+    text: str,
+    font_name: str,
+    desired_size_pt: float,
+    max_width_pt: float,
+    min_size_pt: float = 6.0,
+) -> float:
+    """
+    Reduce font size only when needed to keep text within max width.
+    """
+    if not text:
+        return desired_size_pt
+
+    text_width = pdfmetrics.stringWidth(text, font_name, desired_size_pt)
+    if text_width <= max_width_pt or text_width <= 0:
+        return desired_size_pt
+
+    fitted = desired_size_pt * (max_width_pt / text_width)
+    return max(min_size_pt, min(desired_size_pt, fitted))
 
 
 # ---------------------------------------------------------------------------
@@ -387,10 +410,11 @@ def generate_pdf(
         top_zone_bottom = y_last_line - font_h * 0.2
 
         # Bottom text bounding box
-        bottom_font_size = font_size * 1.25
+        bottom_font_size = font_size * BOTTOM_FONT_SCALE
         bottom_font_h = bottom_font_size * 0.3528 * mm
         bottom_baseline = content_bottom + bottom_font_h * 0.2
         bottom_zone_top = bottom_baseline + bottom_font_h * 0.7
+        max_text_width = (LABEL_WIDTH - 2 * LABEL_PAD_X) * mm
 
         # Barcode area exactly between top text and bottom text
         barcode_area_top = top_zone_bottom - gap
@@ -406,6 +430,8 @@ def generate_pdf(
             text_value = _cell_to_text(rec.get(col_name)) if col_name else ""
             text = f"{prefix}{text_value}" if text_value else ""
             text_y = y_first_line - i * (ls_mm * mm)
+            top_font_size = _fit_font_size_pt(text, FONT_TOP, font_size, max_text_width)
+            c.setFont(FONT_TOP, top_font_size)
             c.drawCentredString(cx, text_y, text)
 
         # ---- Barcode -------------------------------------------------------
@@ -445,7 +471,14 @@ def generate_pdf(
         bottom_col = mapping.get(bottom_field_key, "")
         bottom_text = _cell_to_text(rec.get(bottom_col)) if bottom_col else ""
         if bottom_text:
-            c.setFont("Helvetica-Bold", font_size * 1.25)
+            bottom_draw_size = _fit_font_size_pt(
+                bottom_text,
+                FONT_BOTTOM,
+                bottom_font_size,
+                max_text_width,
+                min_size_pt=6.5,
+            )
+            c.setFont(FONT_BOTTOM, bottom_draw_size)
             c.drawCentredString(cx, bottom_baseline, bottom_text)
 
         # ---- Optional: draw light border for debugging (uncomment) ----------
@@ -555,7 +588,7 @@ def generate_svg(
             top_zone_bottom = y_last_line + font_h * 0.2
             
             # Bottom text bounding box
-            bottom_font_size = fs_pt * 1.25
+            bottom_font_size = fs_pt * BOTTOM_FONT_SCALE
             bottom_font_h = bottom_font_size * 0.3528
             bottom_baseline = content_bottom - bottom_font_h * 0.2
             bottom_zone_top = bottom_baseline - bottom_font_h * 0.7
@@ -637,7 +670,7 @@ def generate_svg(
                     "text-anchor": "middle",
                     "font-family": "Helvetica, Arial, sans-serif",
                     "font-weight": "bold",
-                    "font-size": f"{(fs_svg * 1.25):.2f}",
+                    "font-size": f"{bottom_font_size * 0.3528:.2f}",
                     "fill": "black",
                 })
                 t.text = bottom_text
